@@ -1,194 +1,183 @@
-"""Support for the World Air Quality Index service."""
-from __future__ import annotations
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any
 
-import asyncio
-from datetime import timedelta
-import logging
-
-import aiohttp
-import voluptuous as vol
-from waqiasync import WaqiClient
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.device_registry import DeviceEntryType
+from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.typing import StateType
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
     SensorEntity,
+    SensorEntityDescription,
     SensorStateClass,
 )
 from homeassistant.const import (
-    ATTR_ATTRIBUTION,
-    ATTR_TEMPERATURE,
-    ATTR_TIME,
-    CONF_TOKEN,
-)
-from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import PlatformNotReady
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
-import homeassistant.helpers.config_validation as cv
-from homeassistant.helpers.config_validation import PLATFORM_SCHEMA
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
-
-_LOGGER = logging.getLogger(__name__)
-
-ATTR_DOMINENTPOL = "dominentpol"
-ATTR_HUMIDITY = "humidity"
-ATTR_NITROGEN_DIOXIDE = "nitrogen_dioxide"
-ATTR_OZONE = "ozone"
-ATTR_PM10 = "pm_10"
-ATTR_PM2_5 = "pm_2_5"
-ATTR_PRESSURE = "pressure"
-ATTR_SULFUR_DIOXIDE = "sulfur_dioxide"
-
-KEY_TO_ATTR = {
-    "pm25": ATTR_PM2_5,
-    "pm10": ATTR_PM10,
-    "h": ATTR_HUMIDITY,
-    "p": ATTR_PRESSURE,
-    "t": ATTR_TEMPERATURE,
-    "o3": ATTR_OZONE,
-    "no2": ATTR_NITROGEN_DIOXIDE,
-    "so2": ATTR_SULFUR_DIOXIDE,
-}
-
-ATTRIBUTION = "Data provided by the World Air Quality Index project"
-
-ATTR_ICON = "mdi:cloud"
-ATTR_UNIT = "AQI"
-
-CONF_LOCATIONS = "locations"
-CONF_STATIONS = "stations"
-
-SCAN_INTERVAL = timedelta(minutes=5)
-
-TIMEOUT = 10
-
-PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
-    {
-        vol.Optional(CONF_STATIONS): cv.ensure_list,
-        vol.Required(CONF_TOKEN): cv.string,
-        vol.Required(CONF_LOCATIONS): cv.ensure_list,
-    }
+    CONCENTRATION_MICROGRAMS_PER_CUBIC_METER,
+    PERCENTAGE,
+    PRESSURE_HPA,
+    TEMP_CELSIUS,
 )
 
+from .const import DOMAIN
 
-async def async_setup_platform(
+
+@dataclass
+class EntityDescriptionMixin:
+    """Mixin used to handle data for the WAQI sensors."""
+
+    found_fn: Callable[[dict[str, Any]], StateType]
+    value_fn: Callable[[dict[str, Any]], StateType]
+
+
+@dataclass
+class WAQISensorEntityDescription(SensorEntityDescription, EntityDescriptionMixin):
+    """Class describing WAQI sensor entities."""
+
+
+SENSOR_DESCRIPTIONS: tuple[WAQISensorEntityDescription, ...] = (
+    WAQISensorEntityDescription(
+        key="aqi",
+        icon="mdi:air-filter",
+        name="AQI",
+        native_unit_of_measurement="AQI",
+        found_fn=lambda data: "aqi" in data,
+        value_fn=lambda data: data["aqi"],
+    ),
+    WAQISensorEntityDescription(
+        key="pm25",
+        device_class=SensorDeviceClass.PM25,
+        name="PM2.5",
+        native_unit_of_measurement=CONCENTRATION_MICROGRAMS_PER_CUBIC_METER,
+        state_class=SensorStateClass.MEASUREMENT,
+        found_fn=lambda data: "pm25" in data["iaqi"],
+        value_fn=lambda data: data["iaqi"]["pm25"]["v"],
+    ),
+    WAQISensorEntityDescription(
+        key="pm10",
+        device_class=SensorDeviceClass.PM10,
+        name="PM10",
+        native_unit_of_measurement=CONCENTRATION_MICROGRAMS_PER_CUBIC_METER,
+        state_class=SensorStateClass.MEASUREMENT,
+        found_fn=lambda data: "pm10" in data["iaqi"],
+        value_fn=lambda data: data["iaqi"]["pm10"]["v"],
+    ),
+    WAQISensorEntityDescription(
+        key="humidity",
+        device_class=SensorDeviceClass.HUMIDITY,
+        name="Humidity",
+        native_unit_of_measurement=PERCENTAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+        found_fn=lambda data: "h" in data["iaqi"],
+        value_fn=lambda data: data["iaqi"]["h"]["v"],
+    ),
+    WAQISensorEntityDescription(
+        key="pressure",
+        device_class=SensorDeviceClass.PRESSURE,
+        name="Pressure",
+        native_unit_of_measurement=PRESSURE_HPA,
+        state_class=SensorStateClass.MEASUREMENT,
+        found_fn=lambda data: "p" in data["iaqi"],
+        value_fn=lambda data: data["iaqi"]["p"]["v"],
+    ),
+    WAQISensorEntityDescription(
+        key="temperature",
+        device_class=SensorDeviceClass.TEMPERATURE,
+        name="Temperature",
+        native_unit_of_measurement=TEMP_CELSIUS,
+        state_class=SensorStateClass.MEASUREMENT,
+        found_fn=lambda data: "t" in data["iaqi"],
+        value_fn=lambda data: data["iaqi"]["t"]["v"],
+    ),
+    WAQISensorEntityDescription(
+        key="co",
+        name="CO",
+        native_unit_of_measurement=CONCENTRATION_MICROGRAMS_PER_CUBIC_METER,
+        state_class=SensorStateClass.MEASUREMENT,
+        found_fn=lambda data: "co" in data["iaqi"],
+        value_fn=lambda data: data["iaqi"]["co"]["v"],
+    ),
+    WAQISensorEntityDescription(
+        key="no2",
+        device_class=SensorDeviceClass.NITROGEN_DIOXIDE,
+        name="NO2",
+        native_unit_of_measurement=CONCENTRATION_MICROGRAMS_PER_CUBIC_METER,
+        state_class=SensorStateClass.MEASUREMENT,
+        found_fn=lambda data: "no2" in data["iaqi"],
+        value_fn=lambda data: data["iaqi"]["no2"]["v"],
+    ),
+    WAQISensorEntityDescription(
+        key="so2",
+        device_class=SensorDeviceClass.SULPHUR_DIOXIDE,
+        name="SO2",
+        native_unit_of_measurement=CONCENTRATION_MICROGRAMS_PER_CUBIC_METER,
+        state_class=SensorStateClass.MEASUREMENT,
+        found_fn=lambda data: "so2" in data["iaqi"],
+        value_fn=lambda data: data["iaqi"]["so2"]["v"],
+    ),
+    WAQISensorEntityDescription(
+        key="o3",
+        device_class=SensorDeviceClass.OZONE,
+        name="O3",
+        native_unit_of_measurement=CONCENTRATION_MICROGRAMS_PER_CUBIC_METER,
+        state_class=SensorStateClass.MEASUREMENT,
+        found_fn=lambda data: "o3" in data["iaqi"],
+        value_fn=lambda data: data["iaqi"]["o3"]["v"],
+    ),
+)
+
+
+async def async_setup_entry(
     hass: HomeAssistant,
-    config: ConfigType,
+    entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
-    discovery_info: DiscoveryInfoType | None = None,
 ) -> None:
-    """Set up the requested World Air Quality Index locations."""
+    """Set up sensor based on a config entry."""
+    coordinator = hass.data[DOMAIN][entry.entry_id]["coordinator"]
 
-    token = config[CONF_TOKEN]
-    station_filter = config.get(CONF_STATIONS)
-    locations = config[CONF_LOCATIONS]
-
-    client = WaqiClient(token, async_get_clientsession(hass), timeout=TIMEOUT)
-    dev = []
-    try:
-        for location_name in locations:
-            stations = await client.search(location_name)
-            _LOGGER.debug("The following stations were returned: %s", stations)
-            for station in stations:
-                waqi_sensor = WaqiSensor(client, station)
-                if not station_filter or {
-                    waqi_sensor.uid,
-                    waqi_sensor.url,
-                    waqi_sensor.station_name,
-                } & set(station_filter):
-                    dev.append(waqi_sensor)
-    except (
-        aiohttp.client_exceptions.ClientConnectorError,
-        asyncio.TimeoutError,
-    ) as err:
-        _LOGGER.exception("Failed to connect to WAQI servers")
-        raise PlatformNotReady from err
-    async_add_entities(dev, True)
+    async_add_entities(
+        (
+            WAQISensor(coordinator, description, entry.unique_id, entry.title)
+            for description in SENSOR_DESCRIPTIONS
+            if description.found_fn(coordinator.data)
+        ),
+    )
 
 
-class WaqiSensor(SensorEntity):
-    """Implementation of a WAQI sensor."""
+class WAQISensor(CoordinatorEntity[DataUpdateCoordinator], SensorEntity):
+    """Defines a WAQI sensor entity."""
 
-    _attr_icon = ATTR_ICON
-    _attr_native_unit_of_measurement = ATTR_UNIT
-    _attr_device_class = SensorDeviceClass.AQI
-    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_attribution = "Data provided by the World Air Quality Index project."
+    _attr_has_entity_name = True
 
-    def __init__(self, client, station):
+    def __init__(
+        self,
+        coordinator: DataUpdateCoordinator,
+        entity_description: WAQISensorEntityDescription,
+        unique_id: str,
+        name: str,
+    ) -> None:
         """Initialize the sensor."""
-        self._client = client
-        try:
-            self.uid = station["uid"]
-        except (KeyError, TypeError):
-            self.uid = None
+        super().__init__(coordinator=coordinator)
 
-        try:
-            self.url = station["station"]["url"]
-        except (KeyError, TypeError):
-            self.url = None
+        self.entity_description = entity_description
 
-        try:
-            self.station_name = station["station"]["name"]
-        except (KeyError, TypeError):
-            self.station_name = None
+        self._attrs = {}
 
-        self._data = None
+        self._attr_device_info = DeviceInfo(
+            entry_type=DeviceEntryType.SERVICE,
+            identifiers={(DOMAIN, unique_id)},
+            name=name,
+        )
+
+        self._attr_unique_id = f"{DOMAIN}-{unique_id}-{entity_description.key}".lower()
 
     @property
-    def name(self):
-        """Return the name of the sensor."""
-        if self.station_name:
-            return f"WAQI {self.station_name}"
-        return f"WAQI {self.url if self.url else self.uid}"
-
-    @property
-    def native_value(self):
-        """Return the state of the device."""
-        if self._data is not None:
-            return self._data.get("aqi")
-        return None
-
-    @property
-    def available(self):
-        """Return sensor availability."""
-        return self._data is not None
-
-    @property
-    def unique_id(self):
-        """Return unique ID."""
-        return self.uid
-
-    @property
-    def extra_state_attributes(self):
-        """Return the state attributes of the last update."""
-        attrs = {}
-
-        if self._data is not None:
-            try:
-                attrs[ATTR_ATTRIBUTION] = " and ".join(
-                    [ATTRIBUTION]
-                    + [v["name"] for v in self._data.get("attributions", [])]
-                )
-
-                attrs[ATTR_TIME] = self._data["time"]["s"]
-                attrs[ATTR_DOMINENTPOL] = self._data.get("dominentpol")
-
-                iaqi = self._data["iaqi"]
-                for key in iaqi:
-                    if key in KEY_TO_ATTR:
-                        attrs[KEY_TO_ATTR[key]] = iaqi[key]["v"]
-                    else:
-                        attrs[key] = iaqi[key]["v"]
-                return attrs
-            except (IndexError, KeyError):
-                return {ATTR_ATTRIBUTION: ATTRIBUTION}
-
-    async def async_update(self) -> None:
-        """Get the latest data and updates the states."""
-        if self.uid:
-            result = await self._client.get_station_by_number(self.uid)
-        elif self.url:
-            result = await self._client.get_station_by_name(self.url)
-        else:
-            result = None
-        self._data = result
+    def native_value(self) -> StateType:
+        """Return the state of the sensor."""
+        return self.entity_description.value_fn(self.coordinator.data)

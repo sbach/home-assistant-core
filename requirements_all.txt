@@ -2518,7 +2518,7 @@ wakeonlan==2.1.0
 wallbox==0.4.10
 
 # homeassistant.components.waqi
-waqiasync==1.0.0
+waqi-client-async==1.0.0
 
 # homeassistant.components.folder_watcher
 watchdog==2.1.9

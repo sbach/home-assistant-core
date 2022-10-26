@@ -1487,6 +1487,8 @@ omit =
     homeassistant/components/vulcan/calendar.py
     homeassistant/components/vulcan/fetch_data.py
     homeassistant/components/w800rf32/*
+    homeassistant/components/waqi/__init__.py
+    homeassistant/components/waqi/const.py
     homeassistant/components/waqi/sensor.py
     homeassistant/components/waterfurnace/*
     homeassistant/components/watson_iot/*
